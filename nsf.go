@@ -24,8 +24,8 @@ func (t Track) IsZero() bool {
 	return t == Track{}
 }
 
-// Duration returns a human-readable duration string for the track.
-func (t Track) Duration() string {
+// DurationString returns a human-readable duration string for the track.
+func (t Track) DurationString() string {
 	if t.Time <= 0 && t.Fade <= 0 {
 		return ""
 	}

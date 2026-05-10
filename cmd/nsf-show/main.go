@@ -120,7 +120,7 @@ func showMetadata(path string) error {
 			if t.Author != "" {
 				line += " (by " + t.Author + ")"
 			}
-			if dur := t.Duration(); dur != "" {
+			if dur := t.DurationString(); dur != "" {
 				line += " [" + dur + "]"
 			}
 			fmt.Println(line)
@@ -135,7 +135,7 @@ func showMetadata(path string) error {
 			if t.Label != "" {
 				line += " " + t.Label
 			}
-			if dur := t.Duration(); dur != "" {
+			if dur := t.DurationString(); dur != "" {
 				line += " (" + dur + ")"
 			}
 			fmt.Println(line)
