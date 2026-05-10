@@ -1,40 +1,107 @@
 package nsf
 
 import (
+	"archive/tar"
 	"bytes"
-	"cmp"
+	"compress/gzip"
 	"encoding/binary"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
-func TestParse(t *testing.T) {
-	root := cmp.Or(os.Getenv("TEST_PARSE_NSF_DIR"), "testdata/nsf")
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+type TestFile struct {
+	Name string
+	Data []byte
+}
+
+type TestFiles []TestFile
+
+func (files TestFiles) Get(t *testing.T, name string) TestFile {
+	t.Helper()
+	for _, f := range files {
+		if f.Name == name {
+			return f
+		}
+	}
+	t.Fatalf("file not found in archive: %s", name)
+	return TestFile{}
+}
+
+var nfsFiles TestFiles
+var once sync.Once
+
+func getFiles() TestFiles {
+	once.Do(func() {
+		data, err := readTarGz("testdata/nsf.tar.gz")
+		if err != nil {
+			panic(err)
+		}
+		nfsFiles = data
+	})
+	return nfsFiles
+}
+
+func readTarGz(path string) (TestFiles, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	defer gz.Close()
+
+	var result TestFiles
+	tr := tar.NewReader(gz)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if hdr.Typeflag == tar.TypeDir {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, TestFile{Name: hdr.Name, Data: data})
+	}
+	return result, nil
+}
+
+func TestParseDir(t *testing.T) {
+	dir := os.Getenv("TEST_PARSE_NSF_DIR")
+	if dir == "" {
+		t.Skip("set TEST_PARSE_NSF_DIR to run")
+	}
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
 			return nil
 		}
-
 		base := filepath.Base(path)
-		if strings.HasPrefix(base, "._") {
+		if strings.HasPrefix(base, "._") || strings.Contains(path, "__MACOSX") {
 			return nil
 		}
-		if strings.Contains(path, "__MACOSX") {
-			return nil
-		}
-
 		ext := strings.ToLower(filepath.Ext(path))
 		if ext != ".nsf" && ext != ".nsfe" {
 			return nil
 		}
-
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			f, err := os.Open(path)
@@ -42,29 +109,56 @@ func TestParse(t *testing.T) {
 				t.Fatalf("failed to open file: %v", err)
 			}
 			defer f.Close()
-
 			m, err := Parse(f)
 			if err != nil {
 				t.Errorf("failed to parse: %v", err)
 				return
 			}
-
 			if ext == ".nsf" && m.Format != FormatNSF {
 				t.Errorf("expected format NSF, got %s", m.Format)
 			}
 			if ext == ".nsfe" && m.Format != FormatNSFE {
 				t.Errorf("expected format NSFE, got %s", m.Format)
 			}
-
 			if m.TotalSongs <= 0 {
 				t.Errorf("total songs should be > 0, got %d", m.TotalSongs)
 			}
 		})
-
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk failed: %v", err)
+	}
+}
+
+func TestParse(t *testing.T) {
+	for _, f := range getFiles() {
+		base := filepath.Base(f.Name)
+		if strings.HasPrefix(base, "._") || strings.Contains(f.Name, "__MACOSX") {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(f.Name))
+		if ext != ".nsf" && ext != ".nsfe" {
+			continue
+		}
+		f := f
+		t.Run(f.Name, func(t *testing.T) {
+			t.Parallel()
+			m, err := ParseBytes(f.Data)
+			if err != nil {
+				t.Errorf("failed to parse: %v", err)
+				return
+			}
+			if ext == ".nsf" && m.Format != FormatNSF {
+				t.Errorf("expected format NSF, got %s", m.Format)
+			}
+			if ext == ".nsfe" && m.Format != FormatNSFE {
+				t.Errorf("expected format NSFE, got %s", m.Format)
+			}
+			if m.TotalSongs <= 0 {
+				t.Errorf("total songs should be > 0, got %d", m.TotalSongs)
+			}
+		})
 	}
 }
 
@@ -105,15 +199,8 @@ func TestParseNSFString(t *testing.T) {
 }
 
 func TestTracks(t *testing.T) {
-	path := "testdata/nsf/Aa Yakyuu Jinsei Icchokusen.nsfe"
-	f, err := os.Open(path)
-	if err != nil {
-		t.Skipf("skipping: could not find NSFE test file: %v", err)
-		return
-	}
-	defer f.Close()
-
-	m, err := Parse(f)
+	f := getFiles().Get(t, "nsf/Aa Yakyuu Jinsei Icchokusen.nsfe")
+	m, err := ParseBytes(f.Data)
 	if err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
@@ -167,15 +254,8 @@ func TestTracks(t *testing.T) {
 }
 
 func TestSFXTracks(t *testing.T) {
-	path := "testdata/nsf/Athletic World (NTSC, All Songs + SFX).nsfe"
-	f, err := os.Open(path)
-	if err != nil {
-		t.Skipf("skipping: could not find NSFE test file: %v", err)
-		return
-	}
-	defer f.Close()
-
-	m, err := Parse(f)
+	f := getFiles().Get(t, "nsf/Athletic World (NTSC, All Songs + SFX).nsfe")
+	m, err := ParseBytes(f.Data)
 	if err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
